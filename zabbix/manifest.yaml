@@ -1,0 +1,54 @@
+manifestVersion: 1
+name: "@tagur/zabbix"
+version: 2026.07.10.1
+# Per-extension subdir layout: resolve model/additionalFiles paths relative to
+# this manifest's directory (not the repo-level extensions/models dir).
+paths:
+  base: manifest
+description: |
+  Read-only Zabbix JSON-RPC model for swamp.
+
+  Fetches trend (hourly min/avg/max) or raw history time-series for items
+  across a host group, matching hosts by name regex — mirroring the queries the
+  Grafana Zabbix datasource runs, but as versioned, scriptable swamp data. All
+  methods are read-only (hostgroup.get, host.get, item.get, trend.get,
+  history.get, apiinfo.version); nothing is written back to Zabbix.
+
+  Methods: server_info (apiinfo.version), discover (list matching hosts/items
+  with current values), trends (per-host time-series, one resource per host).
+  Supports Bearer (6.4+) or body-auth (5.4-6.2) tokens and a custom CA cert for
+  internal/self-signed TLS endpoints.
+
+  ## Quick Start
+
+  ```bash
+  swamp extension pull @tagur/zabbix
+  swamp vault create local_encryption zabbix
+  swamp vault put zabbix ZABBIX_TOKEN=<your-api-token>
+  swamp model create @tagur/zabbix mon \
+    --global-arg endpoint=https://zabbix.example.com/zabbix/api_jsonrpc.php \
+    --global-arg 'token=${{ vault.get("zabbix", "ZABBIX_TOKEN") }}'
+  swamp model method run mon server_info
+  swamp model method run mon trends --input itemName="Concurrent Users" --input days=30
+  ```
+repository: "https://github.com/tagur87/swamp-extensions"
+models:
+  - zabbix.ts
+workflows: []
+vaults: []
+drivers: []
+datastores: []
+reports: []
+additionalFiles:
+  - README.md
+  - LICENSE.md
+platforms:
+  - linux-x86_64
+  - linux-aarch64
+  - darwin-x86_64
+  - darwin-aarch64
+labels:
+  - zabbix
+  - monitoring
+  - api
+dependencies: []
