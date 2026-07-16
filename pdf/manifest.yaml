@@ -1,0 +1,48 @@
+manifestVersion: 1
+name: "@tagur/pdf"
+version: 2026.07.16.1
+paths:
+  base: manifest
+description: |
+  PDF extraction model for swamp.
+
+  Reads local PDF files and extracts their content as structured markdown with
+  best-effort detection of headings, tables, lists, and paragraphs. Also
+  captures PDF metadata (title, author, page count, creation/modification
+  dates).
+
+  Methods: extract (single file), extract_batch (all PDFs in a directory —
+  factory pattern producing one resource per file).
+
+  ## Quick Start
+
+  ```bash
+  swamp extension pull @tagur/pdf
+  swamp model create @tagur/pdf my-pdf
+  swamp model method run my-pdf extract --input filePath=/path/to/document.pdf
+  swamp model method run my-pdf extract_batch --input dirPath=/path/to/pdfs
+  swamp data query 'modelName == "my-pdf"' --select '{"name": name, "pages": attributes.metadata.pageCount}'
+  ```
+repository: "https://github.com/tagur87/swamp-extensions"
+models:
+  - pdf.ts
+workflows: []
+vaults: []
+drivers: []
+datastores: []
+reports: []
+additionalFiles:
+  - README.md
+  - LICENSE.md
+platforms:
+  - linux-x86_64
+  - linux-aarch64
+  - darwin-x86_64
+  - darwin-aarch64
+labels:
+  - pdf
+  - markdown
+  - extraction
+  - document
+  - parsing
+dependencies: []
