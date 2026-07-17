@@ -1,0 +1,52 @@
+manifestVersion: 1
+name: "@tagur/netbox"
+version: 2026.07.17.1
+paths:
+  base: manifest
+description: |
+  Generic NetBox REST API integration model for swamp.
+
+  Works with any NetBox instance and any API endpoint. Fetches objects via
+  the REST API and stores each as a separately addressable resource using
+  the factory pattern — enabling CEL queries, cross-model composition,
+  and drift detection via versioned snapshots.
+
+  Methods: sync (fetch all objects from an endpoint with pagination and
+  filters), get (fetch a single object by ID).
+
+  ## Quick Start
+
+  ```bash
+  swamp extension pull @tagur/netbox
+  swamp vault create local_encryption netbox
+  swamp vault put netbox NETBOX_TOKEN=<your-api-token>
+  swamp model create @tagur/netbox sites \
+    --global-arg url=https://nsot.example.com \
+    --global-arg 'token=${{ vault.get("netbox", "NETBOX_TOKEN") }}' \
+    --global-arg endpoint=dcim/sites
+  swamp model method run sites sync
+  swamp data query 'modelName == "sites"' --select '{"name": name, "status": attributes.status}'
+  ```
+repository: "https://github.com/tagur87/swamp-extensions"
+models:
+  - netbox.ts
+workflows: []
+vaults: []
+drivers: []
+datastores: []
+reports: []
+additionalFiles:
+  - README.md
+  - LICENSE.md
+platforms:
+  - linux-x86_64
+  - linux-aarch64
+  - darwin-x86_64
+  - darwin-aarch64
+labels:
+  - netbox
+  - dcim
+  - ipam
+  - api
+  - network
+dependencies: []
