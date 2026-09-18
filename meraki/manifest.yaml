@@ -1,0 +1,69 @@
+manifestVersion: 1
+name: "@tagur/meraki"
+version: 2026.09.17.1
+paths:
+  base: manifest
+description: |
+  Cisco Meraki Dashboard API v1 integration model for swamp.
+
+  Reads organization inventory and status and stores every record as a
+  separately addressable resource using the factory pattern — enabling CEL
+  queries, cross-model composition, and drift detection via versioned
+  snapshots. All methods are read-only.
+
+  One model instance covers many Meraki organizations. `profiles` maps a
+  friendly name to an organization ID plus its own API key, and every method
+  fans out over all profiles in a single run (or one profile via
+  `--input profile=<name>`), so a multi-org fleet needs one model and one lock
+  acquisition rather than N of each.
+
+  Methods: sync_organizations, sync_networks, sync_devices,
+  sync_device_statuses, sync_licenses, sync_uplink_statuses, sync_clients, and
+  `request` — a read-only escape hatch for any other v1 path.
+
+  RFC5988 `Link` pagination is followed to completion under a page cap, and the
+  documented 10 req/s per-organization rate limit is respected by honoring
+  `Retry-After` on HTTP 429 with exponential backoff.
+
+  ## Quick Start
+
+  ```bash
+  swamp extension pull @tagur/meraki
+  swamp vault create local_encryption meraki
+  swamp vault put meraki CORP_API_KEY
+
+  swamp model create @tagur/meraki meraki
+  # then set globalArguments.profiles in the model YAML:
+  #   profiles:
+  #     corp:
+  #       organizationId: "549236"
+  #       apiKey: ${{ vault.get("meraki", "CORP_API_KEY") }}
+
+  swamp model @tagur/meraki method run sync_devices meraki
+  swamp data query 'modelName == "meraki" && specName == "device"' \
+    --select '{"serial": attributes.serial, "model": attributes.model}'
+  ```
+repository: "https://github.com/tagur87/swamp-extensions"
+models:
+  - meraki.ts
+workflows: []
+vaults: []
+drivers: []
+datastores: []
+reports: []
+additionalFiles:
+  - README.md
+  - LICENSE.md
+platforms:
+  - linux-x86_64
+  - linux-aarch64
+  - darwin-x86_64
+  - darwin-aarch64
+labels:
+  - meraki
+  - cisco
+  - network
+  - wireless
+  - inventory
+  - api
+dependencies: []
