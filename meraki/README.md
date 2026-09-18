@@ -96,19 +96,38 @@ swamp model @tagur/meraki method run sync_clients meraki \
 
 ## Methods
 
-| Method                 | Endpoint                               | Spec           |
-| ---------------------- | -------------------------------------- | -------------- |
-| `sync_organizations`   | `/organizations`                       | `organization` |
-| `sync_networks`        | `/organizations/{id}/networks`         | `network`      |
-| `sync_devices`         | `/organizations/{id}/devices`          | `device`       |
-| `sync_device_statuses` | `/organizations/{id}/devices/statuses` | `deviceStatus` |
-| `sync_licenses`        | `/organizations/{id}/licenses`         | `license`      |
-| `sync_uplink_statuses` | `/organizations/{id}/uplinks/statuses` | `uplinkStatus` |
-| `sync_clients`         | `/networks/{networkId}/clients`        | `client`       |
-| `request`              | any v1 path                            | `response`     |
+| Method                 | Endpoint                                | Spec              |
+| ---------------------- | --------------------------------------- | ----------------- |
+| `sync_organizations`   | `/organizations`                        | `organization`    |
+| `sync_networks`        | `/organizations/{id}/networks`          | `network`         |
+| `sync_devices`         | `/organizations/{id}/devices`           | `device`          |
+| `sync_device_statuses` | `/organizations/{id}/devices/statuses`  | `deviceStatus`    |
+| `sync_licenses`        | `/organizations/{id}/licenses`          | `license`         |
+| ↳ co-term fallback     | `/organizations/{id}/licenses/overview` | `licenseOverview` |
+| `sync_uplink_statuses` | `/organizations/{id}/uplinks/statuses`  | `uplinkStatus`    |
+| `sync_clients`         | `/networks/{networkId}/clients`         | `client`          |
+| `request`              | any v1 path                             | `response`        |
 
 Record schemas declare the fields worth querying and pass the rest of each
 payload through unchanged, so nothing the API returns is discarded.
+
+### Licensing models
+
+`/organizations/{id}/licenses` returns per-device licenses and answers HTTP 400
+for an organization on co-termination licensing. `sync_licenses` treats that as
+a statement about the licensing model rather than a fault: it retries against
+`/licenses/overview` and stores the co-term summary (status, expiration,
+licensed device counts) as a `licenseOverview` record, counted as success. Only
+that specific 400 — the documented "does not support per-device licensing"
+message — triggers the fallback; any other 400 still fails the organization.
+
+So a mixed fleet yields `license` records for per-device orgs and
+`licenseOverview` records for co-term ones, from a single run:
+
+```bash
+swamp data query 'modelName == "meraki" && specName == "licenseOverview"' \
+  --select '{"org": attributes.organizationId, "status": attributes.status, "expires": attributes.expirationDate}'
+```
 
 ### `request` — escape hatch
 

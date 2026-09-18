@@ -126,6 +126,13 @@ const LicenseSchema = z.object({
   durationInDays: z.number().nullable().optional(),
 }).passthrough();
 
+const LicenseOverviewSchema = z.object({
+  ...originFields,
+  status: z.string().optional(),
+  expirationDate: z.string().nullable().optional(),
+  licensedDeviceCounts: z.record(z.string(), z.number()).optional(),
+}).passthrough();
+
 const UplinkStatusSchema = z.object({
   ...originFields,
   serial: z.string(),
@@ -513,6 +520,25 @@ async function syncOrgEndpoint(
     instanceKey: (record: Record<string, unknown>, index: number) => string;
     transform?: (record: Record<string, unknown>) => Record<string, unknown>;
     profile?: string;
+    /**
+     * Second chance for one organization after the primary endpoint failed.
+     *
+     * Returning a record means the organization is served by a different
+     * endpoint (a co-terminated licensing model, say) rather than genuinely
+     * broken, so it counts as success and its error is not recorded. Return
+     * null to let the original failure stand.
+     */
+    fallback?: (
+      err: unknown,
+      info: { profileName: string; profile: Profile; organizationId: string },
+    ) => Promise<
+      {
+        specName: string;
+        instanceKey: string;
+        data: Record<string, unknown>;
+        requests: number;
+      } | null
+    >;
   },
 ): Promise<{ dataHandles: { name: string }[] }> {
   const profiles = selectProfiles(ctx.globalArgs, opts.profile);
@@ -581,6 +607,29 @@ async function syncOrgEndpoint(
           run.count++;
         }
       } catch (err) {
+        const recovered = opts.fallback
+          ? await opts.fallback(err, { profileName, profile, organizationId })
+          : null;
+
+        if (recovered) {
+          run.requests += recovered.requests;
+          const name = uniqueName(
+            seen,
+            `${recovered.specName}-${slug(profileName)}-${
+              slug(recovered.instanceKey)
+            }`,
+          );
+          handles.push(
+            await ctx.writeResource(recovered.specName, name, {
+              ...recovered.data,
+              profile: profileName,
+              organizationId,
+            }),
+          );
+          run.count++;
+          continue;
+        }
+
         run.errors.push(`org ${organizationId}: ${message(err)}`);
         ctx.logger.warning(
           "{method} failed for org {organizationId}: {error}",
@@ -685,6 +734,72 @@ function uniqueName(seen: Set<string>, candidate: string): string {
   }
 }
 
+/**
+ * Recover license data for an organization the per-device endpoint rejected.
+ *
+ * `GET /organizations/{id}/licenses` answers 400 for organizations on
+ * co-termination (or subscription) licensing, which is a statement about the
+ * licensing model rather than a fault. Only that case is retried, against
+ * `/licenses/overview`; any other failure returns null so the original error
+ * stands.
+ */
+async function fetchLicenseOverview(
+  err: unknown,
+  info: { profileName: string; profile: Profile; organizationId: string },
+  ctx: SyncContext,
+): Promise<
+  {
+    specName: string;
+    instanceKey: string;
+    data: Record<string, unknown>;
+    requests: number;
+  } | null
+> {
+  if (!isUnsupportedLicensingModel(err)) return null;
+
+  ctx.logger.info(
+    "Org {organizationId} does not support per-device licensing — reading the license overview instead",
+    { organizationId: info.organizationId },
+  );
+
+  const result = await apiGet(
+    buildUrl(
+      baseUrlFor(ctx.globalArgs, info.profile),
+      `organizations/${info.organizationId}/licenses/overview`,
+    ),
+    info.profile.apiKey,
+    ctx.globalArgs.maxRetries,
+    ctx.logger,
+    ctx.signal,
+  );
+
+  if (result.body === null || typeof result.body !== "object") {
+    throw new Error(
+      `License overview for org ${info.organizationId} returned a non-object body`,
+    );
+  }
+
+  return {
+    specName: "licenseOverview",
+    instanceKey: info.organizationId,
+    data: result.body as Record<string, unknown>,
+    requests: result.requests,
+  };
+}
+
+/**
+ * True when an error is the Dashboard API's 400 for an organization whose
+ * licensing model has no per-device licenses.
+ *
+ * Both the status and the documented message are required so an unrelated 400
+ * is not silently swallowed.
+ */
+function isUnsupportedLicensingModel(err: unknown): boolean {
+  const text = err instanceof Error ? err.message : String(err);
+  return text.includes("400") &&
+    /does not support per-device licensing/i.test(text);
+}
+
 /** Normalize an unknown thrown value to a message string. */
 function message(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -703,8 +818,16 @@ function field(
 /** Cisco Meraki Dashboard API v1 integration. */
 export const model = {
   type: "@tagur/meraki",
-  version: "2026.09.17.1",
+  version: "2026.09.18.1",
   globalArguments: GlobalArgsSchema,
+  upgrades: [
+    {
+      toVersion: "2026.09.18.1",
+      description:
+        "Add co-termination license fallback and the licenseOverview spec; globalArguments unchanged",
+      upgradeAttributes: (old: Record<string, unknown>) => old,
+    },
+  ],
   resources: {
     "organization": {
       description: "Meraki organization visible to a profile's API key",
@@ -733,6 +856,13 @@ export const model = {
     "license": {
       description: "Per-device license entitlement",
       schema: LicenseSchema,
+      lifetime: "infinite" as const,
+      garbageCollection: 10,
+    },
+    "licenseOverview": {
+      description:
+        "Co-termination license summary for an organization that does not support per-device licensing",
+      schema: LicenseOverviewSchema,
       lifetime: "infinite" as const,
       garbageCollection: 10,
     },
@@ -990,7 +1120,7 @@ export const model = {
     },
     sync_licenses: {
       description:
-        "Sync per-device license entitlements. Co-termination organizations are recorded as a snapshot error rather than failing the run.",
+        "Sync per-device license entitlements. Organizations on co-termination licensing fall back automatically to the license overview endpoint, stored as a licenseOverview record.",
       arguments: z.object({
         profile: z.string().optional().describe(
           "Limit the run to a single configured profile",
@@ -1014,6 +1144,7 @@ export const model = {
             const { licenseKey: _licenseKey, ...rest } = record;
             return rest;
           },
+          fallback: (err, info) => fetchLicenseOverview(err, info, context),
           profile: args.profile,
         }),
     },

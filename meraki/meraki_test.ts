@@ -256,6 +256,109 @@ Deno.test("a failing profile does not discard the profile that succeeded", async
   );
 });
 
+Deno.test("co-term orgs fall back to the license overview endpoint", async () => {
+  const { context, getWrittenResources, getLogsByLevel } = testContext(
+    corpOnly(),
+  );
+  const paths: string[] = [];
+
+  await withMockedFetch((req: Request) => {
+    const path = new URL(req.url).pathname;
+    paths.push(path);
+    if (path.endsWith("/licenses")) {
+      return new Response(
+        JSON.stringify({
+          errors: [
+            "Organization with ID 111 does not support per-device licensing",
+          ],
+        }),
+        { status: 400 },
+      );
+    }
+    return json({
+      status: "OK",
+      expirationDate: "Jul 17, 2029 UTC",
+      licensedDeviceCounts: { MX67: 210 },
+    });
+  }, async () => {
+    await model.methods.sync_licenses.execute({}, context);
+  });
+
+  assertEquals(paths, [
+    "/api/v1/organizations/111/licenses",
+    "/api/v1/organizations/111/licenses/overview",
+  ]);
+
+  const overview = getWrittenResources().filter((r) =>
+    r.specName === "licenseOverview"
+  );
+  assertEquals(overview.length, 1);
+  assertEquals(overview[0].name, "licenseOverview-corp-111");
+  assertEquals(overview[0].data.status, "OK");
+  assertEquals(overview[0].data.licensedDeviceCounts, { MX67: 210 });
+  assertEquals(overview[0].data.profile, "corp");
+  assertEquals(overview[0].data.organizationId, "111");
+
+  // A recovered org is success, not a recorded failure.
+  const snapshot = getWrittenResources().find((r) =>
+    r.specName === "snapshot"
+  )!;
+  assertEquals(snapshot.data.errors, []);
+  assertEquals(snapshot.data.count, 1);
+  assert(
+    getLogsByLevel("info").some((l) =>
+      l.message.includes("does not support per-device licensing")
+    ),
+    "expected an info log explaining the fallback",
+  );
+});
+
+Deno.test("an unrelated 400 is not mistaken for co-term licensing", async () => {
+  const { context, getWrittenResources } = testContext(corpOnly());
+  const paths: string[] = [];
+
+  await withMockedFetch((req: Request) => {
+    paths.push(new URL(req.url).pathname);
+    return new Response(
+      JSON.stringify({ errors: ["Invalid value for parameter 'state'"] }),
+      { status: 400 },
+    );
+  }, async () => {
+    await assertRejects(() =>
+      model.methods.sync_licenses.execute({ state: "bogus" }, context)
+    );
+  });
+
+  // No overview attempt, and nothing written.
+  assertEquals(paths, ["/api/v1/organizations/111/licenses"]);
+  assertEquals(
+    getWrittenResources().filter((r) => r.specName === "licenseOverview")
+      .length,
+    0,
+  );
+});
+
+Deno.test("per-device orgs still use the licenses endpoint directly", async () => {
+  const { context, getWrittenResources } = testContext(corpOnly());
+
+  await withMockedFetch(
+    () => json([{ id: "lic-1", licenseType: "MR ENT", state: "active" }]),
+    async () => {
+      await model.methods.sync_licenses.execute({}, context);
+    },
+  );
+
+  assertEquals(
+    getWrittenResources().filter((r) => r.specName === "license").length,
+    1,
+  );
+  assertEquals(
+    getWrittenResources().filter((r) => r.specName === "licenseOverview")
+      .length,
+    0,
+  );
+});
+
 Deno.test("a run that produces nothing at all throws", async () => {
   const { context } = testContext();
 

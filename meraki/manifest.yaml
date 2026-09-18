@@ -1,6 +1,6 @@
 manifestVersion: 1
 name: "@tagur/meraki"
-version: 2026.09.17.1
+version: 2026.09.18.1
 paths:
   base: manifest
 description: |
@@ -20,6 +20,10 @@ description: |
   Methods: sync_organizations, sync_networks, sync_devices,
   sync_device_statuses, sync_licenses, sync_uplink_statuses, sync_clients, and
   `request` — a read-only escape hatch for any other v1 path.
+
+  Organizations on co-termination licensing fall back automatically from the
+  per-device licenses endpoint to the license overview endpoint, so
+  sync_licenses works on both licensing models.
 
   RFC5988 `Link` pagination is followed to completion under a page cap, and the
   documented 10 req/s per-organization rate limit is respected by honoring
