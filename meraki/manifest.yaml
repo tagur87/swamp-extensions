@@ -1,6 +1,6 @@
 manifestVersion: 1
 name: "@tagur/meraki"
-version: 2026.09.18.1
+version: 2026.09.18.2
 paths:
   base: manifest
 description: |
@@ -34,7 +34,7 @@ description: |
   ```bash
   swamp extension pull @tagur/meraki
   swamp vault create local_encryption meraki
-  swamp vault put meraki CORP_API_KEY
+  printf '%s' "$MERAKI_KEY" | swamp vault put meraki CORP_API_KEY
 
   swamp model create @tagur/meraki meraki
   # then set globalArguments.profiles in the model YAML:

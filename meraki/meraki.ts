@@ -818,13 +818,19 @@ function field(
 /** Cisco Meraki Dashboard API v1 integration. */
 export const model = {
   type: "@tagur/meraki",
-  version: "2026.09.18.1",
+  version: "2026.09.18.2",
   globalArguments: GlobalArgsSchema,
   upgrades: [
     {
       toVersion: "2026.09.18.1",
       description:
         "Add co-termination license fallback and the licenseOverview spec; globalArguments unchanged",
+      upgradeAttributes: (old: Record<string, unknown>) => old,
+    },
+    {
+      toVersion: "2026.09.18.2",
+      description:
+        "Documentation corrections only; no schema or behavior change",
       upgradeAttributes: (old: Record<string, unknown>) => old,
     },
   ],

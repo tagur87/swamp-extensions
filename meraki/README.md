@@ -33,9 +33,21 @@ API keys are credentials — keep them in a vault and reference them with
 
 ```bash
 swamp vault create local_encryption meraki
-swamp vault put meraki CORP_API_KEY   # prompts, value stays out of shell history
-swamp vault put meraki LAB_API_KEY
+```
 
+`swamp vault put` takes the value as an argument, inline, or on stdin. Pipe it
+so the key stays out of your argv and shell history:
+
+```bash
+read -rs MERAKI_KEY
+printf '%s' "$MERAKI_KEY" | swamp vault put meraki CORP_API_KEY
+unset MERAKI_KEY
+
+# or straight from a password manager
+op read "op://infra/meraki-corp/credential" | swamp vault put meraki CORP_API_KEY
+```
+
+```bash
 swamp model create @tagur/meraki meraki
 ```
 
