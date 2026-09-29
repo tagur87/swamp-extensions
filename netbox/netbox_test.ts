@@ -13,7 +13,7 @@ import {
 import {
   createModelTestContext,
   withMockedFetch,
-} from "jsr:@swamp-club/swamp-testing";
+} from "jsr:@swamp-club/swamp-testing@0.20260706.24";
 import { model } from "./netbox.ts";
 
 const BASE_URL = "https://nsot.example.com";

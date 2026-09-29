@@ -237,8 +237,15 @@ async function findPdfs(
 /** PDF extraction model definition for swamp. */
 export const model = {
   type: "@tagur/pdf" as const,
-  version: "2026.07.16.1",
+  version: "2026.09.29.1",
   globalArguments: GlobalArgsSchema,
+  upgrades: [
+    {
+      toVersion: "2026.09.29.1",
+      description: "Test-only lint fixes; no schema or behavior change",
+      upgradeAttributes: (old: Record<string, unknown>) => old,
+    },
+  ],
 
   resources: {
     document: {

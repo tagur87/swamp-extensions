@@ -12,7 +12,7 @@ import {
   assertRejects,
   assertStringIncludes,
 } from "jsr:@std/assert@1";
-import { createModelTestContext } from "jsr:@swamp-club/swamp-testing";
+import { createModelTestContext } from "jsr:@swamp-club/swamp-testing@0.20260706.24";
 import { PDFDocument, StandardFonts } from "npm:pdf-lib@1.17.1";
 import { model } from "./pdf.ts";
 
@@ -398,7 +398,7 @@ Deno.test("extract_batch throws when filePaths entry is not a file", async () =>
 
 Deno.test("extract_batch continues past corrupt files and reports successes", async () => {
   const { context, getWrittenResources } = ctx();
-  const { dir, paths } = await createTempPdfs([
+  const { dir } = await createTempPdfs([
     { name: "good.pdf", text: "Valid content" },
   ]);
   // Write a corrupt "PDF" file.

@@ -162,8 +162,15 @@ function snapshotName(filters: Record<string, string>): string {
 /** NetBox REST API integration. */
 export const model = {
   type: "@tagur/netbox",
-  version: "2026.07.17.1",
+  version: "2026.09.29.1",
   globalArguments: GlobalArgsSchema,
+  upgrades: [
+    {
+      toVersion: "2026.09.29.1",
+      description: "Test-only lint fixes; no schema or behavior change",
+      upgradeAttributes: (old: Record<string, unknown>) => old,
+    },
+  ],
   resources: {
     "item": {
       description: "Individual NetBox object fetched from the API",

@@ -1,6 +1,6 @@
 manifestVersion: 1
 name: "@tagur/netbox"
-version: 2026.07.17.1
+version: 2026.09.29.1
 paths:
   base: manifest
 description: |
