@@ -1,0 +1,68 @@
+manifestVersion: 1
+name: "@tagur/powershell"
+version: 2026.09.29.1
+paths:
+  base: manifest
+description: |
+  Remote PowerShell (WinRM) for swamp.
+
+  `invoke` runs any script block on a remote Windows computer with
+  `Invoke-Command`, optionally inside a named session configuration, and
+  stores the output (formatted text plus the objects as JSON) as a versioned
+  `result` resource.
+
+  Scripts are templates. Each `{{name}}` placeholder is filled from the
+  `variables` map and inserted as a single-quoted PowerShell literal, so a
+  value can hold any text without changing the command around it.
+
+  PowerShell runs locally through a configurable executable: `pwsh` by
+  default, or `powershell.exe` on Windows. Credentials come from a vault and
+  reach PowerShell over stdin, never on the command line; the password is
+  never stored in results.
+
+  On Linux (including WSL) and macOS, pwsh also needs the PSWSMan WSMan
+  client, Kerberos/NTLM GSSAPI support and domain DNS. The README walks
+  through the full setup and how to verify it.
+
+  ## Quick Start
+
+  ```bash
+  swamp extension pull @tagur/powershell
+  swamp vault create local_encryption powershell
+  printf '%s' 'EXAMPLE\admin' | swamp vault put powershell USERNAME
+  read -s P && printf '%s' "$P" | swamp vault put powershell PASSWORD
+
+  swamp model create @tagur/powershell ps
+  # globalArguments:
+  #   executable: pwsh
+  #   authentication: Negotiate
+  #   username: ${{ vault.get("powershell", "USERNAME") }}
+  #   password: ${{ vault.get("powershell", "PASSWORD") }}
+
+  swamp model @tagur/powershell method run invoke ps \
+    --input computerName=server01.example.com \
+    --input 'script=Get-Service -Name {{svc}}' \
+    --input 'variables={"svc":"WinRM"}'
+  ```
+repository: "https://github.com/tagur87/swamp-extensions"
+models:
+  - powershell.ts
+workflows: []
+vaults: []
+drivers: []
+datastores: []
+reports: []
+additionalFiles:
+  - README.md
+  - LICENSE.md
+platforms:
+  - linux-x86_64
+  - linux-aarch64
+  - darwin-x86_64
+  - darwin-aarch64
+labels:
+  - powershell
+  - winrm
+  - windows
+  - remote-execution
+dependencies: []
