@@ -10,6 +10,9 @@ changes, or calls into a custom session configuration.
 - **Credentials from a vault.** The username and password reach PowerShell
   over stdin, never on the command line, and the password is never stored in
   results.
+- **Subprocess.** Spawns the local `executable` (default `pwsh`) with fixed
+  arguments (`-NoProfile -NonInteractive -EncodedCommand`); the script and
+  credentials go over stdin, not argv.
 - **Versioned results.** Output is stored as a `result` resource with the
   formatted text and the objects as JSON, ready for CEL queries and
   workflows.

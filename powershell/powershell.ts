@@ -304,6 +304,7 @@ export const model = {
         const startedAt = new Date();
         let child: Deno.ChildProcess;
         try {
+          // swamp-quality-ignore deno-command
           child = new Deno.Command(executable, {
             args: [
               "-NoProfile",
