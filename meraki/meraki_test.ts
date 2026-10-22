@@ -7,7 +7,7 @@ import {
   createModelTestContext,
   withMockedFetch,
 } from "jsr:@swamp-club/swamp-testing@0.20260706.24";
-import { assert, assertEquals, assertRejects } from "jsr:@std/assert@1";
+import { assert, assertEquals, assertRejects } from "jsr:@std/assert@1.0.19";
 import { model } from "./meraki.ts";
 
 /** Global arguments with every default filled in, as the runtime would. */

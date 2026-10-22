@@ -1,6 +1,6 @@
 manifestVersion: 1
 name: "@tagur/meraki"
-version: 2026.10.15.1
+version: 2026.10.22.1
 license: MIT
 paths:
   base: manifest

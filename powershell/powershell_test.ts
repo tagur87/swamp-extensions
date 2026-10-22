@@ -8,7 +8,7 @@
  * @module
  */
 import { createModelTestContext } from "jsr:@swamp-club/swamp-testing@0.20260706.24";
-import { assert, assertEquals, assertRejects, assertThrows } from "jsr:@std/assert@1";
+import { assert, assertEquals, assertRejects, assertThrows } from "jsr:@std/assert@1.0.19";
 import { instanceName, model, quotePowerShell, renderScript } from "./powershell.ts";
 
 type InvokeCtx = Parameters<typeof model.methods.invoke.execute>[1];

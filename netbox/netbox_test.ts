@@ -9,7 +9,7 @@ import {
   assertEquals,
   assertRejects,
   assertStringIncludes,
-} from "jsr:@std/assert@1";
+} from "jsr:@std/assert@1.0.19";
 import {
   createModelTestContext,
   withMockedFetch,

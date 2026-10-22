@@ -19,7 +19,7 @@
  *
  * @module
  */
-import { z } from "npm:zod@4";
+import { z } from "npm:zod@4.6.5";
 
 /** Documented base URL for the Meraki Dashboard API v1. */
 const DEFAULT_BASE_URL = "https://api.meraki.com/api/v1";

@@ -8,7 +8,7 @@
  *
  * @module
  */
-import { z } from "npm:zod@4";
+import { z } from "npm:zod@4.6.5";
 
 const MAX_ERROR_BODY = 512;
 const CHECK_TIMEOUT_MS = 15_000;
