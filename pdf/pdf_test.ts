@@ -11,7 +11,7 @@ import {
   assertExists,
   assertRejects,
   assertStringIncludes,
-} from "jsr:@std/assert@1";
+} from "jsr:@std/assert@1.0.19";
 import { createModelTestContext } from "jsr:@swamp-club/swamp-testing@0.20260706.24";
 import { PDFDocument, StandardFonts } from "npm:pdf-lib@1.17.1";
 import { model } from "./pdf.ts";

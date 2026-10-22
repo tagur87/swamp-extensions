@@ -12,7 +12,7 @@
  *
  * @module
  */
-import { z } from "npm:zod@4";
+import { z } from "npm:zod@4.6.5";
 import { extractText, getDocumentProxy } from "npm:unpdf@0.12.1";
 
 // =============================================================================
