@@ -1,6 +1,6 @@
 manifestVersion: 1
 name: "@tagur/zabbix"
-version: 2026.07.10.1
+version: 2026.07.12.1
 # Per-extension subdir layout: resolve model/additionalFiles paths relative to
 # this manifest's directory (not the repo-level extensions/models dir).
 paths:

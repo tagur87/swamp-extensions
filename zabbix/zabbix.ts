@@ -13,7 +13,7 @@
  *
  * @module
  */
-import { z } from "npm:zod@4";
+import { z } from "npm:zod@4.6.5";
 
 // =============================================================================
 // Global arguments
@@ -237,7 +237,7 @@ async function resolveItems(
 /** Zabbix read-only API model definition for swamp. */
 export const model = {
   type: "@tagur/zabbix",
-  version: "2026.07.10.1",
+  version: "2026.07.12.1",
   globalArguments: GlobalArgsSchema,
 
   resources: {
