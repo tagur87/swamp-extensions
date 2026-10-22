@@ -3,10 +3,12 @@
  *
  * @module
  */
-import { assert, assertEquals } from "jsr:@std/assert@1";
+import { assert, assertEquals } from "jsr:@std/assert@1.0.19";
 import {
   base64UrlDecode,
   discoveryUrl,
+  normalizeOverageEndpoint,
+  validateClaims,
   validateDiscovery,
   validateToken,
 } from "./oidc-diagnose.ts";
@@ -240,4 +242,155 @@ Deno.test("validateToken warns on missing exp and missing iss", () => {
   );
   assert(findings.some((f) => f.code === "exp-missing" && f.severity === "warning"));
   assert(findings.some((f) => f.code === "iss-missing" && f.severity === "warning"));
+});
+
+// --- validateClaims ---------------------------------------------------------
+
+Deno.test("validateClaims passes when all required claims present", () => {
+  const findings = validateClaims(
+    {
+      groups: ["g1", "g2"],
+      email: "user@example.com",
+      roles: ["admin"],
+      preferred_username: "user@example.com",
+    },
+    { requiredClaims: ["groups", "email", "roles", "preferred_username"] },
+  );
+  assertEquals(findings.length, 0);
+});
+
+Deno.test("validateClaims flags a missing claim as error", () => {
+  const findings = validateClaims(
+    { email: "user@example.com" },
+    { requiredClaims: ["groups", "email"] },
+  );
+  assert(
+    findings.some((f) => f.code === "claim-missing" && f.severity === "error"),
+  );
+  // only groups is missing
+  assertEquals(findings.filter((f) => f.code === "claim-missing").length, 1);
+});
+
+Deno.test("validateClaims treats empty array / empty string as absent", () => {
+  const emptyArray = validateClaims(
+    { groups: [] },
+    { requiredClaims: ["groups"] },
+  );
+  assert(emptyArray.some((f) => f.code === "claim-missing"));
+
+  const emptyString = validateClaims(
+    { email: "" },
+    { requiredClaims: ["email"] },
+  );
+  assert(emptyString.some((f) => f.code === "claim-missing"));
+});
+
+Deno.test("validateClaims reports Entra overage as info by default and satisfies groups requirement", () => {
+  const findings = validateClaims(
+    {
+      // groups omitted; overage markers present
+      _claim_names: { groups: "src1" },
+      _claim_sources: {
+        src1: {
+          endpoint:
+            "https://graph.microsoft.com/v1.0/users/x/getMemberObjects",
+        },
+      },
+    },
+    { requiredClaims: ["groups"] },
+  );
+  const overage = findings.find((f) => f.code === "groups-overage");
+  assert(overage && overage.severity === "info");
+  // overage satisfies the requirement — no claim-missing error
+  assert(!findings.some((f) => f.code === "claim-missing"));
+  assertEquals(findings.filter((f) => f.severity === "error").length, 0);
+});
+
+Deno.test("validateClaims escalates overage to error when requireInlineGroups set", () => {
+  const findings = validateClaims(
+    {
+      _claim_names: { groups: "src1" },
+      _claim_sources: {
+        src1: { endpoint: "https://graph.microsoft.com/v1.0/x/getMemberObjects" },
+      },
+    },
+    { requiredClaims: ["groups"], requireInlineGroups: true },
+  );
+  const overage = findings.find((f) => f.code === "groups-overage");
+  assert(overage && overage.severity === "error");
+  // still not a separate claim-missing — the overage error covers it
+  assert(!findings.some((f) => f.code === "claim-missing"));
+});
+
+Deno.test("validateClaims reports overage even when groups not in requiredClaims", () => {
+  const findings = validateClaims(
+    {
+      _claim_names: { groups: "src1" },
+      _claim_sources: { src1: { endpoint: "https://graph/x" } },
+    },
+    { requiredClaims: ["email"] },
+  );
+  // email missing -> error; overage still reported as info
+  assert(findings.some((f) => f.code === "claim-missing"));
+  assert(
+    findings.some((f) => f.code === "groups-overage" && f.severity === "info"),
+  );
+});
+
+Deno.test("validateClaims flags expected-group mismatch", () => {
+  const findings = validateClaims(
+    { groups: ["group-a", "group-b"] },
+    { requiredClaims: ["groups"], expectedGroups: ["group-a", "group-x"] },
+  );
+  const mismatch = findings.find((f) => f.code === "groups-mismatch");
+  assert(mismatch && mismatch.severity === "error");
+  assert(mismatch.message.includes("group-x"));
+});
+
+Deno.test("validateClaims passes when expected groups all present", () => {
+  const findings = validateClaims(
+    { groups: ["group-a", "group-b", "group-c"] },
+    { requiredClaims: ["groups"], expectedGroups: ["group-a", "group-c"] },
+  );
+  assertEquals(findings.length, 0);
+});
+
+Deno.test("validateClaims accepts a string groups claim", () => {
+  const findings = validateClaims(
+    { groups: "group-a" },
+    { requiredClaims: ["groups"], expectedGroups: ["group-a"] },
+  );
+  assertEquals(findings.length, 0);
+});
+
+Deno.test("validateClaims no-ops without requiredClaims", () => {
+  const findings = validateClaims({ anything: 1 }, {});
+  assertEquals(findings.length, 0);
+});
+
+// --- normalizeOverageEndpoint -----------------------------------------------
+
+Deno.test("normalizeOverageEndpoint rewrites legacy graph.windows.net to Microsoft Graph", () => {
+  const legacy =
+    "https://graph.windows.net/e9b2b7ba-b238-42a9-b271-2adfc82da650/users/18d5f4a8-1816-4b1d-afdd-49e09c3cc7fa/getMemberObjects";
+  const { url, rewritten } = normalizeOverageEndpoint(legacy);
+  assertEquals(rewritten, true);
+  assertEquals(
+    url,
+    "https://graph.microsoft.com/v1.0/users/18d5f4a8-1816-4b1d-afdd-49e09c3cc7fa/getMemberObjects",
+  );
+});
+
+Deno.test("normalizeOverageEndpoint passes modern graph.microsoft.com through unchanged", () => {
+  const modern = "https://graph.microsoft.com/v1.0/users/abc/getMemberObjects";
+  const { url, rewritten } = normalizeOverageEndpoint(modern);
+  assertEquals(rewritten, false);
+  assertEquals(url, modern);
+});
+
+Deno.test("normalizeOverageEndpoint leaves unparseable legacy URLs alone", () => {
+  const weird = "https://graph.windows.net/tenant/something-else";
+  const { url, rewritten } = normalizeOverageEndpoint(weird);
+  assertEquals(rewritten, false);
+  assertEquals(url, weird);
 });

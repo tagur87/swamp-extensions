@@ -1,16 +1,16 @@
 manifestVersion: 1
 name: "@tagur/oidc-diagnose"
-version: 2026.10.15.1
+version: 2026.10.16.1
 license: MIT
 paths:
   base: manifest
 description: |
-  IdP-agnostic OpenID Connect diagnostics for swamp — read-only
-  troubleshooting of broken login flows against any standards-compliant
-  provider (Okta, Auth0, Entra ID, Keycloak, Zitadel, Cognito, Google, …).
+  IdP-agnostic OpenID Connect diagnostics for swamp — troubleshooting of
+  broken login flows against any standards-compliant provider (Okta, Auth0,
+  Entra ID, Keycloak, Zitadel, Cognito, Google, …).
 
-  No credentials and no vault required: the model exercises only the OpenID
-  Connect Discovery and JWT standards.
+  The read-only methods (discover, jwks, decode-token) need no credentials and
+  no vault. exchange-code and resolve-groups need a client secret, via a vault.
 
   Methods:
     - discover: fetch <issuer>/.well-known/openid-configuration and validate
@@ -19,10 +19,23 @@ description: |
     - decode-token: decode a JWT (header + claims; signature is NOT
       cryptographically verified) and sanity-check alg, kid, iss, aud, exp,
       nbf, iat against the clock, the issuer, and the discovered JWKS.
+      Optionally assert required claims (groups, email, roles, …). Entra
+      groups-overage is informational by default (set requireInlineGroups to
+      make it an error).
+    - exchange-code: exchange an OAuth2 authorization code at the token
+      endpoint (confidential client; secret from a vault), then decode and
+      claim-check the returned id_token. Reproduces the server-side exchange a
+      proxy (oauth2-proxy, Skipper, Pomerium) performs so you can inspect the
+      real user claims the browser never receives.
+    - resolve-groups: expand an Entra groups-overage reference into the actual
+      group list — mints a Microsoft Graph token via a client-credentials
+      grant (secret from a vault) and calls the _claim_sources endpoint from a
+      prior token. The app registration needs Graph application permissions
+      with admin consent.
 
   Every method writes a diagnostic resource even on failure, so a broken
   endpoint leaves a truthful, queryable record. Endpoints discovered by
-  `discover` feed `jwks` and `decode-token` via stored data / CEL.
+  `discover` feed `jwks` and `exchange-code` via stored data / CEL.
 
   ## Quick Start
 
@@ -33,12 +46,13 @@ description: |
   swamp behavior run login-check discover
   swamp behavior run login-check jwks
   swamp behavior run login-check decode-token \
-    --arg token=<jwt> --arg expectedAudience=<client-id>
+    --arg token=<jwt> --arg expectedAudience=<client-id> \
+    --arg 'requiredClaims=["groups","email"]'
   swamp data query 'behavior("login-check")' \
     --select '{"name": name, "findings": attributes.findings}'
   ```
 repository: "https://github.com/tagur87/swamp-extensions"
-behaviors:
+models:
   - oidc-diagnose.ts
 workflows: []
 vaults: []

@@ -1,18 +1,33 @@
 /**
  * IdP-agnostic OpenID Connect diagnostic model for swamp.
  *
- * Read-only troubleshooting for broken OIDC login flows. Works against any
+ * Troubleshooting for broken OIDC login flows. Works against any
  * standards-compliant provider (Okta, Auth0, Entra ID, Keycloak, Zitadel,
- * Cognito, Google, …) because it exercises only the OpenID Connect Discovery
- * and JWT standards — no provider-specific APIs, no credentials, no vault.
+ * Cognito, Google, …) because it exercises only the OpenID Connect Discovery,
+ * token, and JWT standards.
  *
- * Three methods:
- *   - discover:     fetch /.well-known/openid-configuration and validate it
- *                   (issuer match, required endpoints, PKCE, scopes, grants).
- *   - jwks:         fetch the JWKS and report key ids, algorithms, and usage.
- *   - decode-token: decode a JWT (header + claims, no signature verification)
- *                   and sanity-check iss / aud / exp / nbf / iat and the kid
- *                   against a previously discovered JWKS.
+ * Five methods:
+ *   - discover:      fetch /.well-known/openid-configuration and validate it
+ *                    (issuer match, required endpoints, PKCE, scopes, grants).
+ *   - jwks:          fetch the JWKS and report key ids, algorithms, and usage.
+ *   - decode-token:  decode a JWT (header + claims, no signature verification),
+ *                    sanity-check iss / aud / exp / nbf / iat and the kid
+ *                    against a previously discovered JWKS, and (optionally)
+ *                    assert that required claims (groups, email, roles, …) are
+ *                    present. Entra groups-overage is informational by default.
+ *   - exchange-code: exchange an OAuth2 authorization code at the token
+ *                    endpoint (confidential client; secret from a vault), then
+ *                    decode and claim-check the returned id_token. Reproduces
+ *                    the server-side exchange that a proxy (oauth2-proxy,
+ *                    Skipper, Pomerium) performs, so you can see the real user
+ *                    claims the browser never receives.
+ *   - resolve-groups: expand an Entra groups-overage reference into the real
+ *                    group list — mints a Microsoft Graph token via a
+ *                    client-credentials grant (secret from a vault) and calls
+ *                    the _claim_sources endpoint from a prior token.
+ *
+ * The read-only methods (discover, jwks, decode-token) need no credentials.
+ * exchange-code and resolve-groups need a client secret, supplied via a vault.
  *
  * Every method writes a diagnostic resource even when the probe fails, so a
  * broken endpoint still leaves a truthful, queryable record rather than only a
@@ -20,7 +35,7 @@
  *
  * @module
  */
-import { z } from "npm:zod@4";
+import { z } from "npm:zod@4.6.5";
 
 const MAX_ERROR_BODY = 512;
 const DEFAULT_TIMEOUT_MS = 15_000;
@@ -102,7 +117,19 @@ const TokenSchema = z.object({
   notBefore: z.string().optional(),
   issuedAt: z.string().optional(),
   findings: z.array(FindingSchema),
+  claimFindings: z.array(FindingSchema),
+  source: z.enum(["decode", "exchange"]).optional(),
   checkedAt: z.string(),
+});
+
+const GroupsSchema = z.object({
+  issuer: z.string(),
+  resolved: z.boolean(),
+  endpoint: z.string().optional(),
+  count: z.number(),
+  groups: z.array(z.string()),
+  findings: z.array(FindingSchema),
+  resolvedAt: z.string(),
 });
 
 // ---------------------------------------------------------------------------
@@ -391,10 +418,146 @@ export function validateToken(
   return findings;
 }
 
+/**
+ * Assert that required claims are present (and, where given, match expected
+ * values). Detects the Entra "groups overage" case: when a user is in too many
+ * groups, Entra omits the inline `groups` claim and instead sets
+ * `_claim_names` / `_claim_sources` pointing at Microsoft Graph.
+ *
+ * Overage is NOT inherently a problem — a consumer that resolves groups via
+ * Graph (many proxies and apps do) works fine with it. So by default an overage
+ * marker *satisfies* a `groups` requirement and is reported only as an `info`
+ * finding. Set `requireInlineGroups` when the consumer cannot call Graph and
+ * genuinely needs groups inline in the token; overage then becomes an error.
+ */
+export function validateClaims(
+  claims: Record<string, unknown>,
+  opts: {
+    requiredClaims?: string[];
+    expectedGroups?: string[];
+    requireInlineGroups?: boolean;
+  },
+): Finding[] {
+  const findings: Finding[] = [];
+  const required = opts.requiredClaims ?? [];
+
+  // Entra groups-overage markers.
+  const claimNames = claims._claim_names as
+    | Record<string, unknown>
+    | undefined;
+  const hasGroupsOverage = typeof claimNames === "object" &&
+    claimNames !== null && "groups" in claimNames;
+
+  // Report overage once, regardless of whether 'groups' is required, so the
+  // record always explains an absent inline 'groups' claim.
+  if (hasGroupsOverage) {
+    findings.push(
+      opts.requireInlineGroups
+        ? {
+          severity: "error",
+          code: "groups-overage",
+          message:
+            "The 'groups' claim is absent (Entra 'groups overage') but inline " +
+            "groups were required. The user exceeds the token group limit; " +
+            "'_claim_names'/'_claim_sources' point at Microsoft Graph. " +
+            "Configure the app to emit only assigned/security groups to stay " +
+            "under the limit, or drop requireInlineGroups and resolve groups " +
+            "via Graph (see the resolve-groups method).",
+        }
+        : {
+          severity: "info",
+          code: "groups-overage",
+          message:
+            "The 'groups' claim is delivered by reference, not inline (Entra " +
+            "'groups overage'): '_claim_names'/'_claim_sources' point at " +
+            "Microsoft Graph. Expected when the user is in many groups and the " +
+            "consumer resolves groups via Graph. Use resolve-groups to expand " +
+            "them.",
+        },
+    );
+  }
+
+  for (const name of required) {
+    const value = claims[name];
+    const present = value !== undefined && value !== null &&
+      !(Array.isArray(value) && value.length === 0) &&
+      !(typeof value === "string" && value.length === 0);
+
+    if (!present) {
+      // Overage satisfies a 'groups' requirement unless inline groups are
+      // explicitly required: the groups exist, just by reference. The overage
+      // finding (info or error) was already recorded above.
+      if (name === "groups" && hasGroupsOverage) {
+        continue;
+      }
+      findings.push({
+        severity: "error",
+        code: "claim-missing",
+        message: `Required claim '${name}' is absent from the token.` +
+          (name === "groups"
+            ? " For Entra, enable it in App registration → Token " +
+              "configuration (it is not emitted by default)."
+            : ""),
+      });
+      continue;
+    }
+
+    if (
+      name === "groups" && opts.expectedGroups && opts.expectedGroups.length
+    ) {
+      const actual = Array.isArray(value)
+        ? value.filter((g): g is string => typeof g === "string")
+        : typeof value === "string"
+        ? [value]
+        : [];
+      const missing = opts.expectedGroups.filter((g) => !actual.includes(g));
+      if (missing.length > 0) {
+        findings.push({
+          severity: "error",
+          code: "groups-mismatch",
+          message: `Token 'groups' is missing expected value(s): ` +
+            `${missing.join(", ")}. Present: ${
+              actual.length ? actual.join(", ") : "(none)"
+            }.`,
+        });
+      }
+    }
+  }
+
+  return findings;
+}
+
 function toIso(seconds: unknown): string | undefined {
   return typeof seconds === "number"
     ? new Date(seconds * 1000).toISOString()
     : undefined;
+}
+
+/**
+ * Normalize an Entra groups-overage endpoint. Entra still advertises the
+ * retired Azure AD Graph host (`graph.windows.net`) in `_claim_sources`, but
+ * `getMemberObjects` there is now blocked (403 Authorization_RequestDenied).
+ * Rewrite such URLs to the Microsoft Graph equivalent
+ * (`https://graph.microsoft.com/v1.0/users/{oid}/getMemberObjects`), extracting
+ * the user object id from the legacy path. Modern graph.microsoft.com URLs pass
+ * through unchanged. Returns the URL to call and whether it was rewritten.
+ */
+export function normalizeOverageEndpoint(
+  endpoint: string,
+): { url: string; rewritten: boolean } {
+  if (!endpoint.includes("graph.windows.net")) {
+    return { url: endpoint, rewritten: false };
+  }
+  // Legacy form: https://graph.windows.net/{tenant}/users/{oid}/getMemberObjects
+  const match = endpoint.match(/\/users\/([^/]+)\/getMemberObjects/i);
+  if (!match) {
+    return { url: endpoint, rewritten: false };
+  }
+  const oid = match[1];
+  return {
+    url: `https://graph.microsoft.com/v1.0/users/${oid}/getMemberObjects`,
+    rewritten: true,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -420,10 +583,24 @@ type MethodContext = {
 };
 
 /** IdP-agnostic OpenID Connect diagnostics. */
-export const behavior = {
+export const model = {
   type: "@tagur/oidc-diagnose",
-  version: "2026.10.15.1",
+  version: "2026.10.16.1",
   globalArguments: GlobalArgsSchema,
+  upgrades: [
+    {
+      toVersion: "2026.10.16.1",
+      description:
+        "Add exchange-code and resolve-groups methods and claim assertion " +
+        "(requiredClaims / expectedGroups / requireInlineGroups). Entra " +
+        "groups-overage is informational by default and satisfies a 'groups' " +
+        "requirement unless requireInlineGroups is set; resolve-groups expands " +
+        "the _claim_sources Graph endpoint into a 'groups' resource. Adds " +
+        "claimFindings and source fields to the token resource and a new " +
+        "groups resource; no change to existing global arguments.",
+      upgradeAttributes: (old: Record<string, unknown>) => old,
+    },
+  ],
   resources: {
     "discovery": {
       description:
@@ -442,6 +619,13 @@ export const behavior = {
       description:
         "Decoded JWT: header, claims, and standard-claim validation findings",
       schema: TokenSchema,
+      lifetime: "infinite" as const,
+      garbageCollection: 10,
+    },
+    "groups": {
+      description: "Group membership resolved from an Entra groups-overage " +
+        "_claim_sources endpoint via a Microsoft Graph token",
+      schema: GroupsSchema,
       lifetime: "infinite" as const,
       garbageCollection: 10,
     },
@@ -696,7 +880,9 @@ export const behavior = {
         "Decode a JWT (header + claims; signature is NOT cryptographically " +
         "verified) and sanity-check alg, kid, iss, aud, exp, nbf, iat against " +
         "the clock, the configured issuer, and the kids from a prior 'jwks' " +
-        "run. Writes a 'token' resource with per-claim findings.",
+        "run. Optionally assert required claims are present (groups, email, " +
+        "roles, …), with Entra groups-overage detection. Writes a 'token' " +
+        "resource with per-claim findings.",
       arguments: z.object({
         token: z.string().meta({ sensitive: true }).describe(
           "The JWT to decode (an access_token or id_token). Treated as " +
@@ -706,9 +892,30 @@ export const behavior = {
           "Expected 'aud' value (the client_id or resource identifier). When " +
             "set, a mismatch is flagged as an error.",
         ),
+        requiredClaims: z.array(z.string()).optional().describe(
+          "Claim names that must be present and non-empty (e.g. " +
+            "['groups','email','roles','preferred_username']). Each absent " +
+            "claim is an error finding; absent 'groups' under Entra overage is " +
+            "a distinct 'groups-overage' warning.",
+        ),
+        expectedGroups: z.array(z.string()).optional().describe(
+          "Specific group values (ids or names) the 'groups' claim must " +
+            "include. Missing values are flagged as 'groups-mismatch'.",
+        ),
+        requireInlineGroups: z.boolean().optional().describe(
+          "When true, require the 'groups' claim inline in the token: Entra " +
+            "groups-overage becomes an error instead of informational. Leave " +
+            "false (default) when the consumer resolves groups via Graph.",
+        ),
       }),
       execute: async (
-        args: { token: string; expectedAudience?: string },
+        args: {
+          token: string;
+          expectedAudience?: string;
+          requiredClaims?: string[];
+          expectedGroups?: string[];
+          requireInlineGroups?: boolean;
+        },
         context: MethodContext,
       ): Promise<{ dataHandles: Array<{ name: string }> }> => {
         const { issuer, clockSkewSeconds } = context.globalArgs;
@@ -728,6 +935,8 @@ export const behavior = {
               message:
                 "Token is not a JWT: expected at least header.payload segments.",
             }],
+            claimFindings: [],
+            source: "decode",
             checkedAt,
           };
           const handle = await context.writeResource("token", "token", data);
@@ -752,6 +961,8 @@ export const behavior = {
                 errorMessage(err)
               }`,
             }],
+            claimFindings: [],
+            source: "decode",
             checkedAt,
           };
           const handle = await context.writeResource("token", "token", data);
@@ -776,7 +987,15 @@ export const behavior = {
           jwksKids,
         });
 
-        const valid = !findings.some((f) => f.severity === "error");
+        const claimFindings = validateClaims(claims, {
+          requiredClaims: args.requiredClaims,
+          expectedGroups: args.expectedGroups,
+          requireInlineGroups: args.requireInlineGroups,
+        });
+
+        const valid = ![...findings, ...claimFindings].some(
+          (f) => f.severity === "error",
+        );
         const data: Record<string, unknown> = {
           issuer,
           valid,
@@ -788,18 +1007,550 @@ export const behavior = {
           notBefore: toIso(claims.nbf),
           issuedAt: toIso(claims.iat),
           findings,
+          claimFindings,
+          source: "decode",
           checkedAt,
         };
 
         context.logger.info(
-          "Token decoded: valid={valid}, {errors} error finding(s)",
+          "Token decoded: valid={valid}, {errors} error finding(s), " +
+            "{claimErrors} claim error(s)",
           {
             valid,
             errors: findings.filter((f) => f.severity === "error").length,
+            claimErrors:
+              claimFindings.filter((f) => f.severity === "error").length,
           },
         );
         const handle = await context.writeResource("token", "token", data);
         return { dataHandles: [handle] };
+      },
+    },
+    "exchange-code": {
+      description:
+        "Exchange an OAuth2 authorization code at the token endpoint " +
+        "(confidential client; secret from a vault), then decode and " +
+        "claim-check the returned id_token. Reproduces the server-side " +
+        "exchange a proxy performs so you can inspect the real user claims " +
+        "(groups, email, roles, …) the browser never receives. Resolves the " +
+        "token endpoint and jwks kids from prior 'discover' / 'jwks' runs. " +
+        "Writes a 'token' resource; the raw code and secret are never stored.",
+      arguments: z.object({
+        code: z.string().meta({ sensitive: true }).describe(
+          "The authorization code from the redirect callback (?code=...). " +
+            "Single-use and short-lived; sensitive, never stored.",
+        ),
+        clientId: z.string().describe(
+          "The OAuth2 client_id (application id). Also used as the expected " +
+            "id_token audience.",
+        ),
+        clientSecret: z.string().meta({ sensitive: true }).describe(
+          "The client secret. Supply via a vault reference " +
+            "(${{ vault.get(<vault>, <key>) }}), not a literal.",
+        ),
+        redirectUri: z.string().url().describe(
+          "The redirect_uri registered for the app; must match the one used " +
+            "to obtain the code, or the exchange fails with " +
+            "'redirect_uri_mismatch'.",
+        ),
+        codeVerifier: z.string().optional().meta({ sensitive: true }).describe(
+          "PKCE code_verifier, if the authorization request used PKCE.",
+        ),
+        requiredClaims: z.array(z.string()).optional().describe(
+          "Claim names the id_token must contain (e.g. ['groups','email']).",
+        ),
+        expectedGroups: z.array(z.string()).optional().describe(
+          "Group values the 'groups' claim must include.",
+        ),
+        requireInlineGroups: z.boolean().optional().describe(
+          "When true, Entra groups-overage is an error instead of info.",
+        ),
+      }),
+      execute: async (
+        args: {
+          code: string;
+          clientId: string;
+          clientSecret: string;
+          redirectUri: string;
+          codeVerifier?: string;
+          requiredClaims?: string[];
+          expectedGroups?: string[];
+          requireInlineGroups?: boolean;
+        },
+        context: MethodContext,
+      ): Promise<{ dataHandles: Array<{ name: string }> }> => {
+        const { issuer, clockSkewSeconds } = context.globalArgs;
+        const checkedAt = new Date().toISOString();
+        const client = makeClient(context.globalArgs);
+
+        // Resolve the token endpoint from a prior discover run.
+        let tokenEndpoint: string | undefined;
+        const priorDiscovery = await context.readResource("discovery");
+        if (
+          priorDiscovery && typeof priorDiscovery.tokenEndpoint === "string"
+        ) {
+          tokenEndpoint = priorDiscovery.tokenEndpoint;
+        }
+        if (!tokenEndpoint) {
+          const data: Record<string, unknown> = {
+            issuer,
+            valid: false,
+            header: {},
+            claims: {},
+            findings: [{
+              severity: "error",
+              code: "token-endpoint-unknown",
+              message:
+                "No token endpoint available. Run 'discover' first so the " +
+                "token_endpoint can be resolved.",
+            }],
+            claimFindings: [],
+            source: "exchange",
+            checkedAt,
+          };
+          const handle = await context.writeResource("token", "token", data);
+          return { dataHandles: [handle] };
+        }
+
+        try {
+          const form = new URLSearchParams({
+            grant_type: "authorization_code",
+            code: args.code,
+            redirect_uri: args.redirectUri,
+            client_id: args.clientId,
+            client_secret: args.clientSecret,
+          });
+          if (args.codeVerifier) form.set("code_verifier", args.codeVerifier);
+
+          context.logger.info("Exchanging code at {endpoint}", {
+            endpoint: tokenEndpoint,
+          });
+
+          const timeout = AbortSignal.timeout(context.globalArgs.timeoutMs);
+          const combined = AbortSignal.any([context.signal, timeout]);
+          const init: RequestInit & { client?: Deno.HttpClient } = {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/x-www-form-urlencoded",
+              Accept: "application/json",
+            },
+            body: form.toString(),
+            signal: combined,
+          };
+          if (client) init.client = client;
+
+          const resp = await fetch(tokenEndpoint, init);
+          const rawBody = await resp.text().catch(() => "");
+          let body: Record<string, unknown> = {};
+          try {
+            body = rawBody ? JSON.parse(rawBody) : {};
+          } catch {
+            body = {};
+          }
+
+          if (!resp.ok) {
+            // OAuth2 error responses carry 'error' / 'error_description'.
+            const oauthErr = typeof body.error === "string"
+              ? body.error
+              : `http_${resp.status}`;
+            const desc = typeof body.error_description === "string"
+              ? body.error_description
+              : truncateBody(rawBody);
+            const data: Record<string, unknown> = {
+              issuer,
+              valid: false,
+              header: {},
+              claims: {},
+              findings: [{
+                severity: "error",
+                code: `exchange-${oauthErr}`,
+                message: `Token exchange failed (${oauthErr}): ${desc}`,
+              }],
+              claimFindings: [],
+              source: "exchange",
+              checkedAt,
+            };
+            const handle = await context.writeResource("token", "token", data);
+            return { dataHandles: [handle] };
+          }
+
+          const idToken = typeof body.id_token === "string"
+            ? body.id_token
+            : undefined;
+          if (!idToken) {
+            const data: Record<string, unknown> = {
+              issuer,
+              valid: false,
+              header: {},
+              claims: {},
+              findings: [{
+                severity: "error",
+                code: "id-token-absent",
+                message:
+                  "Exchange succeeded but the response has no 'id_token'. " +
+                  "Ensure the 'openid' scope was requested in the authorize " +
+                  "step.",
+              }],
+              claimFindings: [],
+              source: "exchange",
+              checkedAt,
+            };
+            const handle = await context.writeResource("token", "token", data);
+            return { dataHandles: [handle] };
+          }
+
+          const parts = idToken.split(".");
+          let header: Record<string, unknown>;
+          let claims: Record<string, unknown>;
+          try {
+            header = JSON.parse(base64UrlDecode(parts[0]));
+            claims = JSON.parse(base64UrlDecode(parts[1]));
+          } catch (err) {
+            const data: Record<string, unknown> = {
+              issuer,
+              valid: false,
+              header: {},
+              claims: {},
+              findings: [{
+                severity: "error",
+                code: "token-undecodable",
+                message: `Could not decode the returned id_token: ${
+                  errorMessage(err)
+                }`,
+              }],
+              claimFindings: [],
+              source: "exchange",
+              checkedAt,
+            };
+            const handle = await context.writeResource("token", "token", data);
+            return { dataHandles: [handle] };
+          }
+
+          let jwksKids: string[] | undefined;
+          const priorJwks = await context.readResource("jwks");
+          if (priorJwks && Array.isArray(priorJwks.keys)) {
+            jwksKids = (priorJwks.keys as Array<Record<string, unknown>>)
+              .map((k) => (typeof k.kid === "string" ? k.kid : undefined))
+              .filter((k): k is string => k !== undefined);
+          }
+
+          const nowSeconds = Math.floor(Date.now() / 1000);
+          const findings = validateToken(header, claims, {
+            issuer,
+            skewSeconds: clockSkewSeconds,
+            nowSeconds,
+            expectedAudience: args.clientId,
+            jwksKids,
+          });
+          const claimFindings = validateClaims(claims, {
+            requiredClaims: args.requiredClaims,
+            expectedGroups: args.expectedGroups,
+            requireInlineGroups: args.requireInlineGroups,
+          });
+
+          const valid = ![...findings, ...claimFindings].some(
+            (f) => f.severity === "error",
+          );
+          const data: Record<string, unknown> = {
+            issuer,
+            valid,
+            header,
+            claims,
+            kid: typeof header.kid === "string" ? header.kid : undefined,
+            algorithm: typeof header.alg === "string" ? header.alg : undefined,
+            expiresAt: toIso(claims.exp),
+            notBefore: toIso(claims.nbf),
+            issuedAt: toIso(claims.iat),
+            findings,
+            claimFindings,
+            source: "exchange",
+            checkedAt,
+          };
+
+          context.logger.info(
+            "Code exchanged: valid={valid}, {errors} error(s), " +
+              "{claimErrors} claim error(s)",
+            {
+              valid,
+              errors: findings.filter((f) => f.severity === "error").length,
+              claimErrors: claimFindings.filter((f) =>
+                f.severity === "error"
+              ).length,
+            },
+          );
+          const handle = await context.writeResource("token", "token", data);
+          return { dataHandles: [handle] };
+        } catch (err) {
+          const data: Record<string, unknown> = {
+            issuer,
+            valid: false,
+            header: {},
+            claims: {},
+            findings: [{
+              severity: "error",
+              code: "exchange-error",
+              message: `Token exchange request failed: ${errorMessage(err)}`,
+            }],
+            claimFindings: [],
+            source: "exchange",
+            checkedAt,
+          };
+          const handle = await context.writeResource("token", "token", data);
+          return { dataHandles: [handle] };
+        } finally {
+          client?.close();
+        }
+      },
+    },
+    "resolve-groups": {
+      description:
+        "Expand an Entra groups-overage reference into the actual group list. " +
+        "Mints its own Microsoft Graph token via a client-credentials grant " +
+        "(client_id + client_secret from a vault; the app registration needs " +
+        "Graph application permissions such as GroupMember.Read.All or " +
+        "Directory.Read.All with admin consent), reads the _claim_sources " +
+        "endpoint from the prior 'token' run, calls it, and writes a 'groups' " +
+        "resource with the resolved membership. The secret is never stored.",
+      arguments: z.object({
+        clientId: z.string().describe(
+          "The application (client) id used for the client-credentials grant.",
+        ),
+        clientSecret: z.string().meta({ sensitive: true }).describe(
+          "The client secret; supply via a vault reference " +
+            "(${{ vault.get(<vault>, <key>) }}).",
+        ),
+        graphScope: z.string().default(
+          "https://graph.microsoft.com/.default",
+        ).describe(
+          "OAuth2 scope for the Graph token. Defaults to the Microsoft Graph " +
+            "'.default' scope; override for Azure AD Graph if required.",
+        ),
+      }),
+      execute: async (
+        args: { clientId: string; clientSecret: string; graphScope: string },
+        context: MethodContext,
+      ): Promise<{ dataHandles: Array<{ name: string }> }> => {
+        const { issuer } = context.globalArgs;
+        const client = makeClient(context.globalArgs);
+        const resolvedAt = new Date().toISOString();
+
+        const fail = async (
+          code: string,
+          message: string,
+          endpoint?: string,
+        ) => {
+          const data: Record<string, unknown> = {
+            issuer,
+            resolved: false,
+            endpoint,
+            count: 0,
+            groups: [],
+            findings: [{ severity: "error", code, message }],
+            resolvedAt,
+          };
+          const handle = await context.writeResource("groups", "groups", data);
+          return { dataHandles: [handle] };
+        };
+
+        // The overage endpoint lives in the prior token's _claim_sources.
+        const priorToken = await context.readResource("token");
+        const claims = priorToken?.claims as
+          | Record<string, unknown>
+          | undefined;
+        const claimNames = claims?._claim_names as
+          | Record<string, unknown>
+          | undefined;
+        const claimSources = claims?._claim_sources as
+          | Record<string, { endpoint?: string }>
+          | undefined;
+        if (!claims || !claimNames || !claimSources) {
+          return await fail(
+            "no-overage",
+            "No groups-overage reference found. Run exchange-code (or " +
+              "decode-token) first on a token that has _claim_names/" +
+              "_claim_sources for 'groups'.",
+          );
+        }
+        const sourceKey = typeof claimNames.groups === "string"
+          ? claimNames.groups
+          : undefined;
+        const endpoint = sourceKey
+          ? claimSources[sourceKey]?.endpoint
+          : undefined;
+        if (!endpoint) {
+          return await fail(
+            "overage-endpoint-missing",
+            "The token has a groups _claim_names entry but no matching " +
+              "_claim_sources endpoint.",
+          );
+        }
+
+        // Resolve the token endpoint from discovery for the Graph token grant.
+        const priorDiscovery = await context.readResource("discovery");
+        const tokenEndpoint = typeof priorDiscovery?.tokenEndpoint === "string"
+          ? priorDiscovery.tokenEndpoint
+          : undefined;
+        if (!tokenEndpoint) {
+          return await fail(
+            "token-endpoint-unknown",
+            "No token endpoint available for the client-credentials grant. " +
+              "Run 'discover' first.",
+            endpoint,
+          );
+        }
+
+        try {
+          // 1. Client-credentials grant for a Graph token.
+          const grantForm = new URLSearchParams({
+            grant_type: "client_credentials",
+            client_id: args.clientId,
+            client_secret: args.clientSecret,
+            scope: args.graphScope,
+          });
+          const timeout1 = AbortSignal.timeout(context.globalArgs.timeoutMs);
+          const combined1 = AbortSignal.any([context.signal, timeout1]);
+          const grantInit: RequestInit & { client?: Deno.HttpClient } = {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/x-www-form-urlencoded",
+              Accept: "application/json",
+            },
+            body: grantForm.toString(),
+            signal: combined1,
+          };
+          if (client) grantInit.client = client;
+
+          context.logger.info("Minting Graph token at {endpoint}", {
+            endpoint: tokenEndpoint,
+          });
+          const grantResp = await fetch(tokenEndpoint, grantInit);
+          const grantRaw = await grantResp.text().catch(() => "");
+          let grantBody: Record<string, unknown> = {};
+          try {
+            grantBody = grantRaw ? JSON.parse(grantRaw) : {};
+          } catch {
+            grantBody = {};
+          }
+          if (!grantResp.ok) {
+            const oauthErr = typeof grantBody.error === "string"
+              ? grantBody.error
+              : `http_${grantResp.status}`;
+            const desc = typeof grantBody.error_description === "string"
+              ? grantBody.error_description
+              : truncateBody(grantRaw);
+            return await fail(
+              `graph-grant-${oauthErr}`,
+              `Client-credentials grant for a Graph token failed ` +
+                `(${oauthErr}): ${desc}. The app registration likely lacks ` +
+                `Graph application permissions with admin consent.`,
+              endpoint,
+            );
+          }
+          const graphToken = typeof grantBody.access_token === "string"
+            ? grantBody.access_token
+            : undefined;
+          if (!graphToken) {
+            return await fail(
+              "graph-token-absent",
+              "Client-credentials grant succeeded but returned no " +
+                "access_token.",
+              endpoint,
+            );
+          }
+
+          // 2. Call the overage endpoint. Entra still advertises the retired
+          //    Azure AD Graph host; rewrite it to Microsoft Graph. A
+          //    getMemberObjects endpoint is a POST with a body; a memberOf-style
+          //    collection endpoint is a GET.
+          const normalized = normalizeOverageEndpoint(endpoint);
+          const resolveFindings: Finding[] = [];
+          if (normalized.rewritten) {
+            resolveFindings.push({
+              severity: "info",
+              code: "overage-endpoint-rewritten",
+              message:
+                "The token's _claim_sources pointed at the retired Azure AD " +
+                "Graph host (graph.windows.net), where getMemberObjects is now " +
+                "blocked. Rewrote the call to Microsoft Graph " +
+                "(graph.microsoft.com/v1.0).",
+            });
+          }
+          const isPost = normalized.url.includes("getMemberObjects");
+          const timeout2 = AbortSignal.timeout(context.globalArgs.timeoutMs);
+          const combined2 = AbortSignal.any([context.signal, timeout2]);
+          const callInit: RequestInit & { client?: Deno.HttpClient } = {
+            method: isPost ? "POST" : "GET",
+            headers: {
+              Authorization: `Bearer ${graphToken}`,
+              Accept: "application/json",
+              ...(isPost ? { "Content-Type": "application/json" } : {}),
+            },
+            body: isPost
+              ? JSON.stringify({ securityEnabledOnly: false })
+              : undefined,
+            signal: combined2,
+          };
+          if (client) callInit.client = client;
+
+          context.logger.info("Resolving groups from {endpoint}", {
+            endpoint: normalized.url,
+          });
+          const resp = await fetch(normalized.url, callInit);
+          const raw = await resp.text().catch(() => "");
+          if (!resp.ok) {
+            return await fail(
+              "overage-resolve-failed",
+              `Graph overage endpoint returned ${resp.status}: ${
+                truncateBody(raw)
+              }`,
+              endpoint,
+            );
+          }
+          let body: Record<string, unknown> = {};
+          try {
+            body = raw ? JSON.parse(raw) : {};
+          } catch {
+            body = {};
+          }
+          // Both shapes return the ids under "value".
+          const value = Array.isArray(body.value) ? body.value : [];
+          const groups = value.filter(
+            (g): g is string => typeof g === "string",
+          );
+
+          const findings: Finding[] = [...resolveFindings];
+          if (groups.length === 0) {
+            findings.push({
+              severity: "info",
+              code: "groups-empty",
+              message:
+                "The overage endpoint returned no group ids for this user.",
+            });
+          }
+
+          const data: Record<string, unknown> = {
+            issuer,
+            resolved: true,
+            endpoint,
+            count: groups.length,
+            groups,
+            findings,
+            resolvedAt,
+          };
+          context.logger.info("Resolved {count} group(s)", {
+            count: groups.length,
+          });
+          const handle = await context.writeResource("groups", "groups", data);
+          return { dataHandles: [handle] };
+        } catch (err) {
+          return await fail(
+            "resolve-groups-error",
+            `Resolving groups failed: ${errorMessage(err)}`,
+            endpoint,
+          );
+        } finally {
+          client?.close();
+        }
       },
     },
   },
