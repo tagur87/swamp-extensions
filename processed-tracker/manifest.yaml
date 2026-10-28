@@ -1,0 +1,61 @@
+manifestVersion: 1
+name: "@tagur/processed-tracker"
+version: 2026.10.26.1
+license: MIT
+paths:
+  base: manifest
+description: |
+  A tiny dedup ledger for swamp pipelines: remember which ids have already
+  been processed, so repeat runs skip work already done.
+
+  Backed entirely by swamp data — it never touches any external system. Keys
+  are opaque strings, so it fits any id scheme (message ids, file hashes,
+  record ids, URLs). The whole ledger is one accumulating set per `scope`, so
+  several pipelines can share one tracker instance without colliding.
+
+  Methods operate on LISTS so a workflow fans out in one call rather than
+  looping:
+
+  - `check`  — partition candidate ids into `newIds` (not yet processed) and
+    `knownIds` (already in the ledger), without mutating. Process only the new.
+  - `mark`   — add ids to the ledger (call AFTER their work succeeds).
+    Idempotent — re-marking is a no-op.
+  - `list`   — read the current ledger (count + ids).
+  - `forget` — remove ids so they are reprocessed next run.
+
+  ## Quick Start
+
+  ```bash
+  swamp extension pull @tagur/processed-tracker
+
+  swamp behavior create @tagur/processed-tracker dedup --global-arg scope=my-pipeline
+
+  # In a workflow: read the ledger, process only what is new, mark after success.
+  swamp behavior run dedup check --arg 'ids=["a","b","c"]'
+  swamp behavior run dedup mark  --arg 'ids=["a","b"]'
+  ```
+repository: "https://github.com/tagur87/swamp-extensions"
+models:
+  - processed_tracker.ts
+workflows: []
+vaults: []
+drivers: []
+datastores: []
+reports: []
+additionalFiles:
+  - README.md
+  - LICENSE.md
+  - processed_tracker_test.ts
+platforms:
+  - linux-x86_64
+  - linux-aarch64
+  - darwin-x86_64
+  - darwin-aarch64
+labels:
+  - dedup
+  - deduplication
+  - idempotency
+  - ledger
+  - pipeline
+  - state
+dependencies: []

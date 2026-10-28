@@ -1,0 +1,72 @@
+manifestVersion: 1
+name: "@tagur/gdrive-upload"
+version: 2026.10.26.1
+license: MIT
+paths:
+  base: manifest
+description: |
+  Upload local files into Google Drive (My Drive), under a named folder.
+
+  Auth is a Google OAuth access token with Drive scope, wired from a vault
+  (e.g. `@atalanta/gcloud-token`, which mints one per run from the gcloud
+  CLI). The token is treated as sensitive and never stored in a resource.
+
+  IMPORTANT — quota project: with *user* Application Default Credentials the
+  Drive API rejects requests that have no quota project (HTTP 403 "requires a
+  quota project"). This behavior sends `x-goog-user-project: <quotaProject>`
+  on every call, so set `quotaProject` to a GCP project id with the Drive API
+  enabled. See the README.
+
+  Methods:
+
+  - `ensure-folder` — find a folder by name under a parent (default My Drive
+    root), creating it if absent. Idempotent; records the folder id.
+  - `upload-file`   — multipart-upload one local file into a folder under a
+    chosen name.
+  - `upload-many`   — upload a batch of files in one run (fan-out); continues
+    past individual failures and reports them.
+
+  ## Quick Start
+
+  ```bash
+  swamp extension pull @tagur/gdrive-upload
+  swamp extension pull @atalanta/gcloud-token
+
+  # A Drive-scoped token source (needs the gcloud CLI logged in with Drive).
+  gcloud auth login --enable-gdrive-access
+  swamp vault create @atalanta/gcloud-token gdrive-token \
+    --config '{"gcloudPath":"/opt/homebrew/bin/gcloud","scopes":"https://www.googleapis.com/auth/drive"}'
+
+  swamp behavior create @tagur/gdrive-upload gdrive \
+    --global-arg 'accessToken=${{ vault.get("gdrive-token","ACCESS_TOKEN") }}' \
+    --global-arg 'quotaProject=my-gcp-project'
+
+  swamp behavior run gdrive ensure-folder --arg name=Inbox --arg parentId=root
+  swamp behavior run gdrive upload-file \
+    --arg path=/tmp/report.pdf --arg name='report.pdf' \
+    --arg folderId=<id-from-ensure-folder>
+  ```
+repository: "https://github.com/tagur87/swamp-extensions"
+models:
+  - gdrive_upload.ts
+workflows: []
+vaults: []
+drivers: []
+datastores: []
+reports: []
+additionalFiles:
+  - README.md
+  - LICENSE.md
+  - gdrive_upload_test.ts
+platforms:
+  - linux-x86_64
+  - linux-aarch64
+  - darwin-x86_64
+  - darwin-aarch64
+labels:
+  - google-drive
+  - gdrive
+  - upload
+  - google
+  - storage
+dependencies: []
