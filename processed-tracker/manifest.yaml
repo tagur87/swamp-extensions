@@ -1,6 +1,6 @@
 manifestVersion: 1
 name: "@tagur/processed-tracker"
-version: 2026.10.26.1
+version: 2026.11.13.1
 license: MIT
 paths:
   base: manifest

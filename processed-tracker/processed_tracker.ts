@@ -19,7 +19,7 @@
  *
  * @module
  */
-import { z } from "npm:zod@4";
+import { z } from "npm:zod@4.6.5";
 
 const GlobalArgsSchema = z.object({
   scope: z.string().min(1).default("default").describe(
